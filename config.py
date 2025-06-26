@@ -63,7 +63,7 @@ MODEL_PARAMS: Dict[str, Dict[str, Any]] = {
 }
 
 # Model evaluation
-CV_FOLDS = 5
+CV_FOLDS = 2  # Reduced from 5 to handle small datasets better
 METRICS = ["accuracy", "precision", "recall", "f1", "roc_auc"]
 
 # SMOTE parameters
