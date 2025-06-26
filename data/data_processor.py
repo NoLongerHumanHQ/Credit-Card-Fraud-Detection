@@ -266,14 +266,66 @@ class DataProcessor:
         logger.info("Applying SMOTE to handle class imbalance")
         
         # Check class distribution before SMOTE
-        logger.info(f"Class distribution before SMOTE: {dict(y.value_counts())}")
+        class_counts = y.value_counts()
+        logger.info(f"Class distribution before SMOTE: {dict(class_counts)}")
         
-        # Apply SMOTE
-        smote = SMOTE(**config.SMOTE_PARAMS)
-        X_resampled, y_resampled = smote.fit_resample(X, y)
+        # Check if we have enough samples for SMOTE
+        min_samples_needed = 6  # SMOTE typically needs at least 6 samples of minority class
+        if class_counts.min() < min_samples_needed:
+            logger.warning(f"Not enough samples for SMOTE (minimum {min_samples_needed} needed). Using simple duplication instead.")
+            
+            # Identify minority class
+            minority_class = class_counts.idxmin()
+            majority_class = class_counts.idxmax()
+            
+            # Get indices for each class
+            minority_indices = y[y == minority_class].index
+            
+            # Calculate how many duplicates we need
+            target_ratio = config.SMOTE_PARAMS.get("sampling_strategy", 0.1)
+            target_minority_count = int(class_counts[majority_class] * target_ratio)
+            duplicates_needed = max(0, target_minority_count - class_counts[minority_class])
+            
+            if duplicates_needed > 0:
+                # Duplicate minority samples with small random variations
+                minority_X = X.loc[minority_indices].copy()
+                minority_y = y.loc[minority_indices].copy()
+                
+                # Create duplicates with small variations
+                duplicates_X = pd.DataFrame()
+                duplicates_y = pd.Series(dtype=y.dtype)
+                
+                for _ in range(duplicates_needed):
+                    # Select a random sample to duplicate
+                    idx = np.random.choice(minority_indices)
+                    sample_X = X.loc[idx:idx].copy()
+                    sample_y = y.loc[idx:idx].copy()
+                    
+                    # Add small random variations (1-2% of original values)
+                    for col in sample_X.columns:
+                        noise = np.random.normal(0, 0.01 * abs(sample_X[col].values[0]) + 0.001)
+                        sample_X[col] = sample_X[col] + noise
+                    
+                    # Add to duplicates
+                    duplicates_X = pd.concat([duplicates_X, sample_X])
+                    duplicates_y = pd.concat([duplicates_y, sample_y])
+                
+                # Combine original and duplicated data
+                X_resampled = pd.concat([X, duplicates_X])
+                y_resampled = pd.concat([y, duplicates_y])
+            else:
+                X_resampled, y_resampled = X, y
+        else:
+            # Apply SMOTE
+            smote = SMOTE(**config.SMOTE_PARAMS)
+            X_resampled_array, y_resampled_array = smote.fit_resample(X, y)
+            
+            # Convert back to DataFrame/Series
+            X_resampled = pd.DataFrame(X_resampled_array, columns=X.columns)
+            y_resampled = pd.Series(y_resampled_array, name=y.name)
         
-        # Check class distribution after SMOTE
-        logger.info(f"Class distribution after SMOTE: {dict(pd.Series(y_resampled).value_counts())}")
+        # Check class distribution after resampling
+        logger.info(f"Class distribution after resampling: {dict(pd.Series(y_resampled).value_counts())}")
         
         return X_resampled, y_resampled
     
@@ -302,10 +354,47 @@ class DataProcessor:
         # Save feature names
         self.feature_names = X.columns.tolist()
         
+        # Check if we have enough samples of each class for stratification
+        class_counts = y.value_counts()
+        min_class_count = class_counts.min()
+        
         # Split into train and test
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=config.RANDOM_STATE, stratify=y
-        )
+        try:
+            # Try stratified split first
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=config.RANDOM_STATE, stratify=y
+            )
+        except ValueError as e:
+            logger.warning(f"Stratified split failed: {e}. Using regular split instead.")
+            # Fall back to regular split if stratification fails
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=config.RANDOM_STATE, stratify=None
+            )
+            
+            # Check if we have both classes in train and test sets
+            if len(y_train.unique()) < 2 or len(y_test.unique()) < 2:
+                logger.warning("One of the splits doesn't have both classes. Adjusting split manually.")
+                # Ensure both train and test sets have at least one sample of each class
+                fraud_indices = y[y == 1].index
+                non_fraud_indices = y[y == 0].index
+                
+                # Calculate how many of each to put in test set
+                n_fraud_test = max(1, int(len(fraud_indices) * test_size))
+                n_non_fraud_test = max(1, int(len(non_fraud_indices) * test_size))
+                
+                # Split indices
+                fraud_test_indices = fraud_indices[:n_fraud_test]
+                fraud_train_indices = fraud_indices[n_fraud_test:]
+                non_fraud_test_indices = non_fraud_indices[:n_non_fraud_test]
+                non_fraud_train_indices = non_fraud_indices[n_non_fraud_test:]
+                
+                # Combine indices
+                test_indices = pd.concat([fraud_test_indices, non_fraud_test_indices])
+                train_indices = pd.concat([fraud_train_indices, non_fraud_train_indices])
+                
+                # Create new splits
+                X_train, X_test = X.loc[train_indices], X.loc[test_indices]
+                y_train, y_test = y.loc[train_indices], y.loc[test_indices]
         
         # Scale features
         X_train = self.scale_features(X_train, fit=True)
