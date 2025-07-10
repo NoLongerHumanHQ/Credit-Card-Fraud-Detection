@@ -307,7 +307,7 @@ def display_prediction_tab():
     """Display single transaction prediction tab."""
     st.header("Real-time Fraud Detection")
     
-    # Load fraud detector
+    # Load Fraud Detector
     _, fraud_detector, _ = train_or_load_models()
     
     # Get sample transaction
